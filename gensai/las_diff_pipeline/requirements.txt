@@ -1,0 +1,29 @@
+# コア
+numpy>=1.24
+scipy>=1.10
+pyyaml>=6.0
+
+# 点群I/O
+laspy[lazrs]>=2.5
+open3d>=0.18              # ICP, SOR, ボクセル, KDTree
+# pdal は conda 経由のインストールを推奨（M3C2 を使う場合のみ）
+# conda install -c conda-forge pdal python-pdal
+
+# 地理空間
+pyproj>=3.6
+shapely>=2.0
+geopandas>=0.14
+rasterio>=1.3
+fiona>=1.9
+
+# ユーティリティ
+tqdm>=4.66
+click>=8.1                 # CLI（argparse でもよいがクリックの方がメンテしやすい）
+
+# OSM建物取得（aggregation.unit=building, source=osm のとき）
+osmnx>=1.9                 # オプション
+
+# 開発用（任意）
+# pytest
+# black
+# ruff

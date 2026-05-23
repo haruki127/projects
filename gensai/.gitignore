@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Editors
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Point cloud / raster intermediate
+*.las
+*.laz
+*.npy
+*.npz
+*.tif
+
+# Build / outputs
+las_diff_pipeline/examples/outputs/
+las_diff_pipeline/examples/data/pre_synthetic.las
+las_diff_pipeline/examples/data/post_synthetic.las
+las_diff_pipeline/_m3c2_tmp/
+
+# Keep these test fixtures
+!las_diff_pipeline/examples/data/buildings_synthetic.geojson
