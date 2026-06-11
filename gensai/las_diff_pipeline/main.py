@@ -126,17 +126,17 @@ def run(cfg: Config, only_step: str | None = None) -> None:
     if only_step == "difference":
         return
 
-    # ─── 5. 有意性判定 + スコアリング ───
+    # ─── 5. 有意性判定 ───
     logging.info("=== Step 5: Scoring ===")
     sc_cfg = cfg.scoring
     thresholds = sc_cfg.get("thresholds", [0.3, 1.0, 3.0])
     use_sig = sc_cfg.get("use_significance", True)
 
+    # M3C2 の LoD95 が得られている場合のみ有意性マスクを構築。
+    # aggregate_grid / aggregate_buildings は significant マスクの比率を参照して
+    # セル・建物単位でスコアを調整する。prelim_score は不要（各集約関数が内部で算出）。
     if use_sig and lod95 is not None:
-        from pipeline.scoring import score_by_thresholds
-
-        prelim_score = score_by_thresholds(dz, thresholds)
-        prelim_score, significant = apply_significance(dz, lod95, prelim_score)
+        _, significant = apply_significance(dz, lod95, np.zeros_like(dz, dtype=np.int8))
     else:
         significant = None
 

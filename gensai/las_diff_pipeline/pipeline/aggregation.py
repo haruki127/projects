@@ -64,7 +64,8 @@ def aggregate_grid(xyz, dz, cell_size, bbox=None, significant=None,
         y0 = miny + cy * cell_size
         geom = box(x0, y0, x0 + cell_size, y0 + cell_size)
 
-        score = int(score_by_thresholds(np.array([dz_p95]), thresholds)[0])
+        # dz_mean で基本スコアを算出（dz_p95 は外れ値に過敏なため不使用）
+        score = int(score_by_thresholds(np.array([dz_mean]), thresholds)[0])
         if sig_ratio < 0.5:
             score = max(score - 1, 0)
 

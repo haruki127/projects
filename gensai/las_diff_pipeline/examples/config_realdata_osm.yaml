@@ -28,7 +28,10 @@ difference:
   method: "dsm"
   dsm:
     resolution: 0.5
-    method: "max"
+    # POST が地表フィルタ済みの場合は "min" を使用すること。
+    # "max" だと PRE 側の屋根・樹冠と POST 側の地面を比較し
+    # 全セルが大きな負 dz になる（Phase 6 で確認済みの問題）。
+    method: "min"
 
 scoring:
   thresholds: [0.3, 1.0, 3.0]

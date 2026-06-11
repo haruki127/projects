@@ -67,14 +67,15 @@ def voxel_downsample(pc: PointCloud, voxel_size: float) -> PointCloud:
     logger.info("Voxel downsample: %.3fm", voxel_size)
     xyz = pc.xyz
     ix = np.floor(xyz / voxel_size).astype(np.int64)
-    # 一意なキーで集約
-    key = ix[:, 0].astype(np.int64) * 73856093 ^ ix[:, 1] * 19349663 ^ ix[:, 2] * 83492791
-    order = np.argsort(key)
-    ks = key[order]
-    xs = xyz[order]
-    u, first = np.unique(ks, return_index=True)
-    sums = np.add.reduceat(xs, first, axis=0)
-    counts = np.diff(np.append(first, len(ks)))
+    # np.lexsort で (ix0, ix1, ix2) の辞書順ソート → XOR ハッシュ衝突なし
+    order = np.lexsort((ix[:, 2], ix[:, 1], ix[:, 0]))
+    ix_s = ix[order]
+    xyz_s = xyz[order]
+    # 隣接行のボクセルインデックスが変わる位置がグループ境界
+    diff = np.any(ix_s[1:] != ix_s[:-1], axis=1)
+    first = np.concatenate([[0], np.where(diff)[0] + 1])
+    sums = np.add.reduceat(xyz_s, first, axis=0)
+    counts = np.diff(np.append(first, len(xyz_s)))
     centroids = sums / counts[:, None]
     logger.info("  %d -> %d points", len(xyz), len(centroids))
     return PointCloud(xyz=centroids, crs_epsg=pc.crs_epsg, extras=pc.extras)
@@ -89,17 +90,18 @@ def classify_ground(pc: PointCloud, cell_size: float = 1.0) -> PointCloud:
     xyz = pc.xyz
     ix = np.floor(xyz[:, 0] / cell_size).astype(np.int64)
     iy = np.floor(xyz[:, 1] / cell_size).astype(np.int64)
-    key = ix * 73856093 ^ iy * 19349663
-    order = np.argsort(key)
-    ks = key[order]; zs = xyz[order, 2]; idxs = order  # idxs[k] = original index
-    u, first = np.unique(ks, return_index=True)
-    # min-Z per cell: argmin via reduceat-like
-    counts = np.diff(np.append(first, len(ks)))
+    # (ix, iy, z) の辞書順ソート → 同セル内で Z 昇順になるため先頭が min-Z 点
+    # XOR ハッシュによる衝突を排除
+    order = np.lexsort((xyz[:, 2], iy, ix))
+    ix_s = ix[order]; iy_s = iy[order]
+    # セル境界: ix か iy が変わる位置
+    diff_mask = np.concatenate(
+        [[True], (ix_s[1:] != ix_s[:-1]) | (iy_s[1:] != iy_s[:-1])]
+    )
+    # 各セルの先頭インデックス = min-Z 点の元インデックス
+    keep_orig = order[diff_mask]
     keep = np.zeros(len(xyz), dtype=bool)
-    for k in range(len(u)):
-        s, n = first[k], counts[k]
-        local = zs[s:s+n]
-        keep[idxs[s + int(np.argmin(local))]] = True
+    keep[keep_orig] = True
     n_in = int(keep.sum())
     logger.info("  %d / %d ground points", n_in, len(xyz))
     return PointCloud(xyz=pc.xyz[keep],

@@ -12,8 +12,8 @@ import time
 import laspy
 import numpy as np
 
-PRE = r"D:\notowest14\07FD2032.las"
-POST = r"D:\ground_data_07fd1_2025\07fd203_grd.las"
+PRE = r"D:\projects\notowest14\07FD2032.las"
+POST = r"D:\projects\ground_data_07fd1_2025\07fd203_grd.las"
 OUT_DIR = r"D:\projects\gensai\las_diff_pipeline\examples\outputs\realdata"
 EPSG_WORK = 6675
 DSM_RES = 1.0
