@@ -22,8 +22,8 @@
 <body>
 <div id="header"><h1>点群データ 危険度マッピングシステム</h1></div>
 <div id="controls">
-  <label>災害前 LAS: <input type="file" id="before-file" accept=".las,.laz"></label>
-  <label>災害後 LAS: <input type="file" id="after-file" accept=".las,.laz"></label>
+  <label>災害前 LAS: <input type="file" id="before-file" accept=".las,.laz" multiple></label>
+  <label>災害後 LAS: <input type="file" id="after-file" accept=".las,.laz" multiple></label>
   <button id="analyze-btn" onclick="runAnalyze()">解析実行</button>
   <span id="status"></span>
 </div>
@@ -55,17 +55,17 @@ function setStatus(msg) {
 }
 
 async function runAnalyze() {
-  const before = document.getElementById("before-file").files[0];
-  const after  = document.getElementById("after-file").files[0];
-  if (!before || !after) { alert("災害前・後の両ファイルを選択してください"); return; }
+  const beforeFiles = document.getElementById("before-file").files;
+  const afterFiles  = document.getElementById("after-file").files;
+  if (!beforeFiles.length || !afterFiles.length) { alert("災害前・後の両ファイルを選択してください"); return; }
 
   const btn = document.getElementById("analyze-btn");
   btn.disabled = true;
   setStatus("解析中...");
 
   const form = new FormData();
-  form.append("before", before);
-  form.append("after", after);
+  for (const f of beforeFiles) form.append("before", f);
+  for (const f of afterFiles)  form.append("after", f);
 
   try {
     const res = await fetch("/analyze", { method: "POST", body: form });

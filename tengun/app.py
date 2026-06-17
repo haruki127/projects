@@ -7,13 +7,15 @@ app = Flask(__name__)
 GRID_SIZE = 1.0  # グリッドサイズ（メートル相当）
 
 
-def load_xyz(path):
-    """LASファイルからXYZ座標を読み込む"""
-    las = laspy.read(path)
-    x = np.array(las.x)
-    y = np.array(las.y)
-    z = np.array(las.z)
-    return x, y, z
+def load_xyz(paths):
+    """1つ以上のLASファイルからXYZ座標を結合して読み込む"""
+    xs, ys, zs = [], [], []
+    for path in (paths if isinstance(paths, list) else [paths]):
+        las = laspy.read(path)
+        xs.append(np.array(las.x))
+        ys.append(np.array(las.y))
+        zs.append(np.array(las.z))
+    return np.concatenate(xs), np.concatenate(ys), np.concatenate(zs)
 
 
 def compute_grid_mean_z(x, y, z, x_edges, y_edges):
@@ -28,10 +30,10 @@ def compute_grid_mean_z(x, y, z, x_edges, y_edges):
     return {k: np.mean(v) for k, v in grid.items()}
 
 
-def analyze(before_path, after_path):
-    """2つのLASファイルを比較しGeoJSONを返す"""
-    bx, by, bz = load_xyz(before_path)
-    ax, ay, az = load_xyz(after_path)
+def analyze(before_paths, after_paths):
+    """LASファイル群を比較しGeoJSONを返す"""
+    bx, by, bz = load_xyz(before_paths)
+    ax, ay, az = load_xyz(after_paths)
 
     # 共通範囲でグリッドを作成
     x_min = max(bx.min(), ax.min())
@@ -84,12 +86,18 @@ def analyze_route():
         return jsonify({"error": "before と after の両ファイルが必要です"}), 400
 
     with tempfile.TemporaryDirectory() as tmp:
-        before_path = os.path.join(tmp, "before.las")
-        after_path = os.path.join(tmp, "after.las")
-        request.files["before"].save(before_path)
-        request.files["after"].save(after_path)
+        def save_all(key):
+            paths = []
+            for i, f in enumerate(request.files.getlist(key)):
+                p = os.path.join(tmp, f"{key}_{i}.las")
+                f.save(p)
+                paths.append(p)
+            return paths
+
+        before_paths = save_all("before")
+        after_paths  = save_all("after")
         try:
-            result = analyze(before_path, after_path)
+            result = analyze(before_paths, after_paths)
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
