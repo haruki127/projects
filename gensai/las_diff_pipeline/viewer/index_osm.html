@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>被害スコアマップ (OSM / Leaflet)</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #map { position: absolute; top: 0; left: 0; right: 340px; bottom: 0; }
+  #panel { position: absolute; top: 0; right: 0; width: 340px; bottom: 0; background: #fafafa;
+           border-left: 1px solid #ddd; padding: 16px; overflow-y: auto; box-sizing: border-box; }
+  h1 { font-size: 17px; margin: 0 0 6px 0; }
+  h2 { font-size: 13px; margin: 18px 0 6px 0; color: #555; text-transform: uppercase; letter-spacing: 0.05em; }
+  .legend-item { display: flex; align-items: center; margin: 4px 0; font-size: 13px; }
+  .legend-color { width: 22px; height: 22px; margin-right: 8px; border-radius: 3px; border: 1px solid #999; }
+  .stat-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
+  .filter-buttons { display: flex; gap: 4px; margin-bottom: 8px; }
+  .filter-buttons button { flex: 1; padding: 6px 4px; border: 1px solid #ccc; border-radius: 4px;
+                            background: white; cursor: pointer; font-size: 12px; }
+  .filter-buttons button.active { background: #2c3e50; color: white; border-color: #2c3e50; }
+  #file-input { font-size: 12px; }
+  #status { padding: 8px 10px; background: #fff3cd; border: 1px solid #ffe69c; border-radius: 4px;
+            margin-bottom: 8px; font-size: 12px; }
+  .status-ok  { background: #d4edda; border-color: #c3e6cb; }
+  .status-err { background: #f8d7da; border-color: #f5c6cb; }
+  .control-row { font-size: 12px; margin: 4px 0; display: flex; align-items: center; gap: 6px; }
+  input[type=range] { flex: 1; }
+  .hint { font-size: 11px; color: #888; margin: 4px 0 8px 0; line-height: 1.4; }
+  .swatch-inline { display: inline-block; vertical-align: middle; width: 14px; height: 14px; border-radius: 2px; margin-right: 4px; }
+  .leaflet-popup-content dt { font-weight: 600; color: #666; margin-top: 4px; font-size: 11px; }
+  .leaflet-popup-content dd { margin: 0 0 2px 0; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside id="panel">
+  <h1>被害スコアマップ (OSM)</h1>
+  <p class="hint">API キー不要の Leaflet + OpenStreetMap 版。即時表示できます。</p>
+
+  <div id="status">準備中…</div>
+
+  <h2>データ</h2>
+  <input type="file" id="file-input" accept=".geojson,.json">
+  <p class="hint">自動ロードに失敗した場合は上のボタンから選択してください。</p>
+
+  <h2>フィルタ</h2>
+  <div class="filter-buttons" id="filter-buttons">
+    <button data-min="0" class="active">全て</button>
+    <button data-min="1">≥1</button>
+    <button data-min="2">≥2</button>
+    <button data-min="3">3のみ</button>
+  </div>
+
+  <h2>ベース地図</h2>
+  <div class="control-row">
+    <label><input type="radio" name="basemap" value="osm" checked> OpenStreetMap</label>
+  </div>
+  <div class="control-row">
+    <label><input type="radio" name="basemap" value="gsi"> 地理院標準</label>
+  </div>
+  <div class="control-row">
+    <label><input type="radio" name="basemap" value="gsi_photo"> 地理院写真</label>
+  </div>
+
+  <h2>凡例</h2>
+  <div id="legend">
+    <div class="legend-item"><div class="legend-color" style="background:#2ecc71"></div>0: 変化なし</div>
+    <div class="legend-item"><div class="legend-color" style="background:#f1c40f"></div>1: 軽微</div>
+    <div class="legend-item"><div class="legend-color" style="background:#e67e22"></div>2: 中度</div>
+    <div class="legend-item"><div class="legend-color" style="background:#c0392b"></div>3: 甚大</div>
+  </div>
+
+  <h2>表示</h2>
+  <div class="control-row">
+    <label><input type="checkbox" id="show-borders" checked> セル境界</label>
+  </div>
+  <div class="control-row">
+    <span>不透明度</span><input type="range" id="opacity" min="0" max="100" value="60">
+    <span id="opacity-val">60%</span>
+  </div>
+
+  <h2>統計</h2>
+  <div id="stats">—</div>
+
+  <h2>選択セル</h2>
+  <div id="selected">クリックで詳細表示</div>
+</aside>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const COLORS = ["#2ecc71", "#f1c40f", "#e67e22", "#c0392b"];
+  const DEFAULT_CENTER = [37.28, 136.73];
+  const map = L.map("map", { center: DEFAULT_CENTER, zoom: 16 });
+
+  const baseLayers = {
+    osm: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: '© OpenStreetMap contributors'
+    }),
+    gsi: L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png", {
+      maxZoom: 18, attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院タイル</a>'
+    }),
+    gsi_photo: L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg", {
+      maxZoom: 18, attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院シームレス空中写真</a>'
+    })
+  };
+  let currentBase = baseLayers.osm.addTo(map);
+
+  document.querySelectorAll('input[name="basemap"]').forEach(r => {
+    r.addEventListener("change", e => {
+      map.removeLayer(currentBase);
+      currentBase = baseLayers[e.target.value].addTo(map);
+    });
+  });
+
+  let dataLayer = null, allFeatures = [], currentMinScore = 0;
+
+  function setStatus(msg, cls) {
+    const el = document.getElementById("status");
+    el.textContent = msg; el.className = "";
+    if (cls) el.classList.add("status-" + cls);
+  }
+
+  function styleFn(feature) {
+    const s = Number(feature.properties.damage_score ?? 0);
+    const visible = s >= currentMinScore;
+    const op = parseInt(document.getElementById("opacity").value, 10) / 100;
+    const sb = document.getElementById("show-borders").checked;
+    return {
+      fillColor: COLORS[s] || "#aaa",
+      fillOpacity: visible ? op : 0,
+      color: "#222",
+      weight: (visible && sb) ? 0.4 : 0,
+      opacity: visible ? 0.8 : 0
+    };
+  }
+
+  function popupContent(p) {
+    const fmt = v => (typeof v === "number" && Number.isFinite(v)) ? v.toFixed(3) + " m" : "—";
+    const s = Number(p.damage_score ?? 0);
+    return `
+      <div style="min-width:180px;">
+        <h3 style="margin:0 0 6px 0;font-size:14px;">${p.id ?? "—"}</h3>
+        <dl style="margin:0;">
+          <dt>被害スコア</dt><dd><b style="color:${COLORS[s]};font-size:16px;">${s}</b></dd>
+          <dt>dz 平均</dt><dd>${fmt(p.dz_mean)}</dd>
+          <dt>dz 95%値 (|dz|)</dt><dd>${fmt(p.dz_p95)}</dd>
+          <dt>点数</dt><dd>${p.n_points ?? p.n_points_post ?? "—"}</dd>
+          <dt>有意性比</dt><dd>${p.significant_ratio ?? "—"}</dd>
+          <dt>集約方式</dt><dd>${p.method ?? "—"}</dd>
+        </dl>
+      </div>`;
+  }
+
+  function loadGeoJSON(gj, source) {
+    if (dataLayer) map.removeLayer(dataLayer);
+    allFeatures = gj.features || [];
+    dataLayer = L.geoJSON(gj, {
+      style: styleFn,
+      onEachFeature: (feature, layer) => {
+        layer.on("click", e => {
+          const html = popupContent(feature.properties || {});
+          layer.bindPopup(html, { maxWidth: 260 }).openPopup();
+          document.getElementById("selected").innerHTML = html;
+        });
+      }
+    }).addTo(map);
+    try { map.fitBounds(dataLayer.getBounds(), { padding: [20, 20] }); } catch (e) {}
+    updateStats();
+    setStatus(`${allFeatures.length} 件読み込み完了 (${source})`, "ok");
+  }
+
+  function updateStats() {
+    const c = [0,0,0,0];
+    let dzSum=0, dzN=0, dzMin=Infinity, dzMax=-Infinity;
+    allFeatures.forEach(f => {
+      const p = f.properties || {};
+      const s = Number(p.damage_score ?? 0);
+      if (s>=0 && s<4) c[s]++;
+      const dz = p.dz_mean;
+      if (typeof dz==="number" && Number.isFinite(dz)) {
+        dzSum+=dz; dzN++;
+        if (dz<dzMin) dzMin=dz;
+        if (dz>dzMax) dzMax=dz;
+      }
+    });
+    const total = c.reduce((a,b)=>a+b,0)||1;
+    const rows = c.map((cnt,i) =>
+      `<div class="stat-row"><span><span class="swatch-inline" style="background:${COLORS[i]}"></span>Score ${i}</span><b>${cnt} (${(100*cnt/total).toFixed(1)}%)</b></div>`).join("");
+    const dzInfo = dzN > 0
+      ? `<div class="stat-row" style="border-top:1px solid #ddd;padding-top:6px;margin-top:4px;"><span>dz_mean 平均</span><b>${(dzSum/dzN).toFixed(2)} m</b></div>
+         <div class="stat-row"><span>dz_mean 範囲</span><b>${dzMin.toFixed(2)} 〜 ${dzMax.toFixed(2)} m</b></div>`
+      : "";
+    document.getElementById("stats").innerHTML =
+      `<div class="stat-row"><span>総数</span><b>${total}</b></div>` + rows + dzInfo;
+  }
+
+  function refreshStyle() { if (dataLayer) dataLayer.setStyle(styleFn); }
+
+  document.querySelectorAll("#filter-buttons button").forEach(b => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#filter-buttons button").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      currentMinScore = parseInt(b.dataset.min, 10);
+      refreshStyle();
+    });
+  });
+  document.getElementById("show-borders").addEventListener("change", refreshStyle);
+  document.getElementById("opacity").addEventListener("input", e => {
+    document.getElementById("opacity-val").textContent = e.target.value + "%";
+    refreshStyle();
+  });
+  document.getElementById("file-input").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try { loadGeoJSON(JSON.parse(ev.target.result), file.name); }
+      catch (err) { setStatus("JSON parse error: " + err.message, "err"); }
+    };
+    reader.readAsText(file);
+  });
+
+  async function tryAutoLoad() {
+    const candidates = [
+      "./damage_score_07FD2032.geojson",
+      "./damage_score.geojson",
+      "../examples/outputs/realdata/damage_score.geojson",
+      "../examples/outputs/synthetic/damage_score.geojson",
+      "../examples/outputs/synthetic_building/damage_score.geojson"
+    ];
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url, { cache: "no-cache" });
+        if (res.ok) { loadGeoJSON(await res.json(), url); return; }
+      } catch (e) {}
+    }
+    setStatus("GeoJSONを自動取得できませんでした。ファイルを選択してください。", "err");
+  }
+  tryAutoLoad();
+</script>
+</body>
+</html>

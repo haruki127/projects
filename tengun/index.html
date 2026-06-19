@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>点群データ危険度マップ</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    body { margin: 0; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+    #header { background: #2c3e50; color: #fff; padding: 10px 20px; }
+    #header h1 { margin: 0; font-size: 18px; }
+    #controls { padding: 10px 20px; background: #f4f4f4; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+    #controls label { font-size: 14px; }
+    #controls input[type=file] { font-size: 13px; }
+    #analyze-btn { padding: 8px 20px; background: #2980b9; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+    #analyze-btn:disabled { background: #aaa; cursor: not-allowed; }
+    #status { font-size: 13px; color: #555; }
+    #map { flex: 1; }
+    #legend { position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: rgba(255,255,255,0.9);
+              padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.8; }
+  </style>
+</head>
+<body>
+<div id="header"><h1>点群データ 危険度マッピングシステム</h1></div>
+<div id="controls">
+  <label>災害前 LAS: <input type="file" id="before-file" accept=".las,.laz" multiple></label>
+  <label>災害後 LAS: <input type="file" id="after-file" accept=".las,.laz" multiple></label>
+  <button id="analyze-btn" onclick="runAnalyze()">解析実行</button>
+  <span id="status"></span>
+</div>
+<div id="map"></div>
+<div id="legend">
+  <b>危険度</b><br>
+  <span style="color:#006400">■</span> 1〜3 低<br>
+  <span style="color:#ffa500">■</span> 4〜6 中<br>
+  <span style="color:#cc0000">■</span> 7〜10 高
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map("map").setView([35.6, 139.7], 13);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "© OpenStreetMap contributors"
+}).addTo(map);
+
+let markerLayer = L.layerGroup().addTo(map);
+
+function dangerColor(d) {
+  if (d <= 3) return "#006400";
+  if (d <= 6) return "#ffa500";
+  return "#cc0000";
+}
+
+function setStatus(msg) {
+  document.getElementById("status").textContent = msg;
+}
+
+async function runAnalyze() {
+  const beforeFiles = document.getElementById("before-file").files;
+  const afterFiles  = document.getElementById("after-file").files;
+  if (!beforeFiles.length || !afterFiles.length) { alert("災害前・後の両ファイルを選択してください"); return; }
+
+  const btn = document.getElementById("analyze-btn");
+  btn.disabled = true;
+  setStatus("解析中...");
+
+  const form = new FormData();
+  for (const f of beforeFiles) form.append("before", f);
+  for (const f of afterFiles)  form.append("after", f);
+
+  try {
+    const res = await fetch("/analyze", { method: "POST", body: form });
+    const geojson = await res.json();
+    if (geojson.error) { alert("エラー: " + geojson.error); return; }
+
+    markerLayer.clearLayers();
+    const bounds = [];
+    geojson.features.forEach(f => {
+      const [lon, lat] = f.geometry.coordinates;
+      const d = f.properties.danger;
+      L.circleMarker([lat, lon], {
+        radius: 6, color: dangerColor(d), fillColor: dangerColor(d),
+        fillOpacity: 0.7, weight: 1
+      }).bindPopup(`危険度: ${d}<br>ΔZ: ${f.properties.delta_z}m`).addTo(markerLayer);
+      bounds.push([lat, lon]);
+    });
+
+    if (bounds.length) map.fitBounds(bounds);
+    setStatus(`解析完了: ${geojson.features.length} 箇所`);
+  } catch (e) {
+    alert("通信エラー: " + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
