@@ -1,3 +1,0 @@
-flask>=3.0
-laspy>=2.5
-numpy>=1.26

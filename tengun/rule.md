@@ -1,5 +1,9 @@
-rule
+## Part 1: General Guidelines (Karpathy)
 
+1. **Think Before Coding** — 前提を明示。曖昧なら推測せず質問する。
+2. **Simplicity First** — 最小のコードで解く。50行で済むものを500行にしない。
+3. **Surgical Changes** — 依頼されていないコードを変更しない。ついでの整理はしない。
+4. **Goal-Driven Execution** — 「何が達成されれば成功か」を先に合意してから実装する。
 
 システム概要
 ・地震後の移動や避難所間の移動、避難所から病院への移動など、被災後で時間に余裕があるときに安全な移動ができるサービスを提供したい。

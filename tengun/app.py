@@ -1,25 +1,25 @@
 from flask import Flask, request, jsonify, send_from_directory
 import laspy
 import numpy as np
-import os, tempfile
+import os, tempfile, threading, uuid, shutil
 
 app = Flask(__name__)
-GRID_SIZE = 1.0  # グリッドサイズ（メートル相当）
+GRID_SIZE = 1.0
+jobs = {}  # job_id → {"status": "processing"/"done"/"error", ...}
 
 
 def load_xyz(paths):
-    """1つ以上のLASファイルからXYZ座標を結合して読み込む"""
     xs, ys, zs = [], [], []
     for path in (paths if isinstance(paths, list) else [paths]):
-        las = laspy.read(path)
-        xs.append(np.array(las.x))
-        ys.append(np.array(las.y))
-        zs.append(np.array(las.z))
+        with laspy.open(path) as f:
+            las = f.read()
+            xs.append(np.array(las.x))
+            ys.append(np.array(las.y))
+            zs.append(np.array(las.z))
     return np.concatenate(xs), np.concatenate(ys), np.concatenate(zs)
 
 
 def compute_grid_mean_z(x, y, z, x_edges, y_edges):
-    """各グリッドセルの平均Z値を計算する"""
     grid = {}
     xi = np.digitize(x, x_edges) - 1
     yi = np.digitize(y, y_edges) - 1
@@ -31,11 +31,9 @@ def compute_grid_mean_z(x, y, z, x_edges, y_edges):
 
 
 def analyze(before_paths, after_paths):
-    """LASファイル群を比較しGeoJSONを返す"""
     bx, by, bz = load_xyz(before_paths)
     ax, ay, az = load_xyz(after_paths)
 
-    # 共通範囲でグリッドを作成
     x_min = max(bx.min(), ax.min())
     x_max = min(bx.max(), ax.max())
     y_min = max(by.min(), ay.min())
@@ -45,9 +43,8 @@ def analyze(before_paths, after_paths):
     y_edges = np.arange(y_min, y_max + GRID_SIZE, GRID_SIZE)
 
     before_grid = compute_grid_mean_z(bx, by, bz, x_edges, y_edges)
-    after_grid = compute_grid_mean_z(ax, ay, az, x_edges, y_edges)
+    after_grid  = compute_grid_mean_z(ax, ay, az, x_edges, y_edges)
 
-    # 共通セルのΔZを計算
     common_keys = set(before_grid) & set(after_grid)
     if not common_keys:
         return {"type": "FeatureCollection", "features": []}
@@ -65,14 +62,23 @@ def analyze(before_paths, after_paths):
     for (xi, yi), delta in deltas.items():
         cx = x_edges[xi] + GRID_SIZE / 2
         cy = y_edges[yi] + GRID_SIZE / 2
-        danger = to_danger(delta)
         features.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [cx, cy]},
-            "properties": {"danger": danger, "delta_z": round(float(delta), 3)}
+            "properties": {"danger": to_danger(delta), "delta_z": round(float(delta), 3)}
         })
 
     return {"type": "FeatureCollection", "features": features}
+
+
+def run_job(job_id, before_paths, after_paths, tmp_dir):
+    try:
+        result = analyze(before_paths, after_paths)
+        jobs[job_id] = {"status": "done", "result": result}
+    except Exception as e:
+        jobs[job_id] = {"status": "error", "error": str(e)}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.route("/")
@@ -85,23 +91,32 @@ def analyze_route():
     if "before" not in request.files or "after" not in request.files:
         return jsonify({"error": "before と after の両ファイルが必要です"}), 400
 
-    with tempfile.TemporaryDirectory() as tmp:
-        def save_all(key):
-            paths = []
-            for i, f in enumerate(request.files.getlist(key)):
-                p = os.path.join(tmp, f"{key}_{i}.las")
-                f.save(p)
-                paths.append(p)
-            return paths
+    job_id = str(uuid.uuid4())
+    tmp = tempfile.mkdtemp(dir="D:\\")
 
-        before_paths = save_all("before")
-        after_paths  = save_all("after")
-        try:
-            result = analyze(before_paths, after_paths)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+    def save_all(key):
+        paths = []
+        for i, f in enumerate(request.files.getlist(key)):
+            p = os.path.join(tmp, f"{key}_{i}.las")
+            f.save(p)
+            paths.append(p)
+        return paths
 
-    return jsonify(result)
+    before_paths = save_all("before")
+    after_paths  = save_all("after")
+
+    jobs[job_id] = {"status": "processing"}
+    threading.Thread(target=run_job, args=(job_id, before_paths, after_paths, tmp), daemon=True).start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/status/<job_id>")
+def status_route(job_id):
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(job)
 
 
 if __name__ == "__main__":

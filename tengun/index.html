@@ -14,6 +14,10 @@
     #analyze-btn { padding: 8px 20px; background: #2980b9; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
     #analyze-btn:disabled { background: #aaa; cursor: not-allowed; }
     #status { font-size: 13px; color: #555; }
+    #progress-wrap { padding: 0 20px 8px; background: #f4f4f4; display: none; }
+    #progress-bg { background: #ddd; border-radius: 4px; height: 8px; }
+    #progress-bar { width: 0%; height: 8px; background: #2980b9; border-radius: 4px; transition: width 0.3s; }
+    #progress-label { font-size: 12px; color: #555; margin-top: 3px; }
     #map { flex: 1; }
     #legend { position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: rgba(255,255,255,0.9);
               padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.8; }
@@ -26,6 +30,10 @@
   <label>災害後 LAS: <input type="file" id="after-file" accept=".las,.laz" multiple></label>
   <button id="analyze-btn" onclick="runAnalyze()">解析実行</button>
   <span id="status"></span>
+</div>
+<div id="progress-wrap">
+  <div id="progress-bg"><div id="progress-bar"></div></div>
+  <div id="progress-label"></div>
 </div>
 <div id="map"></div>
 <div id="legend">
@@ -54,6 +62,20 @@ function setStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
+function setProgress(pct) {
+  const wrap  = document.getElementById("progress-wrap");
+  const bar   = document.getElementById("progress-bar");
+  const label = document.getElementById("progress-label");
+  if (pct === null) {
+    wrap.style.display = "none";
+    bar.style.width = "0%";
+  } else {
+    wrap.style.display = "block";
+    bar.style.width = pct + "%";
+    label.textContent = `アップロード: ${pct}%`;
+  }
+}
+
 async function runAnalyze() {
   const beforeFiles = document.getElementById("before-file").files;
   const afterFiles  = document.getElementById("after-file").files;
@@ -61,36 +83,75 @@ async function runAnalyze() {
 
   const btn = document.getElementById("analyze-btn");
   btn.disabled = true;
-  setStatus("解析中...");
+  setStatus("アップロード中...");
+  setProgress(0);
 
   const form = new FormData();
   for (const f of beforeFiles) form.append("before", f);
   for (const f of afterFiles)  form.append("after", f);
 
   try {
-    const res = await fetch("/analyze", { method: "POST", body: form });
-    const geojson = await res.json();
-    if (geojson.error) { alert("エラー: " + geojson.error); return; }
-
-    markerLayer.clearLayers();
-    const bounds = [];
-    geojson.features.forEach(f => {
-      const [lon, lat] = f.geometry.coordinates;
-      const d = f.properties.danger;
-      L.circleMarker([lat, lon], {
-        radius: 6, color: dangerColor(d), fillColor: dangerColor(d),
-        fillOpacity: 0.7, weight: 1
-      }).bindPopup(`危険度: ${d}<br>ΔZ: ${f.properties.delta_z}m`).addTo(markerLayer);
-      bounds.push([lat, lon]);
+    // Step 1: XHR でアップロード進捗を取得しながら job_id を受け取る
+    const job_id = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/analyze");
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) setProgress(Math.round(e.loaded / e.total * 100));
+      };
+      xhr.onload = () => {
+        const { job_id, error } = JSON.parse(xhr.responseText);
+        error ? reject(new Error(error)) : resolve(job_id);
+      };
+      xhr.onerror = () => reject(new Error("アップロード失敗"));
+      xhr.send(form);
     });
 
-    if (bounds.length) map.fitBounds(bounds);
-    setStatus(`解析完了: ${geojson.features.length} 箇所`);
+    setProgress(null);
+    setStatus("解析中...");
+
+    // Step 2: 2秒ごとに完了を確認（ポーリング）
+    await new Promise((resolve, reject) => {
+      const timer = setInterval(async () => {
+        try {
+          const job = await fetch(`/status/${job_id}`).then(r => r.json());
+          if (job.status === "done") {
+            clearInterval(timer);
+            renderResult(job.result);
+            resolve();
+          } else if (job.status === "error") {
+            clearInterval(timer);
+            alert("解析エラー: " + job.error);
+            reject();
+          }
+        } catch (e) {
+          clearInterval(timer);
+          alert("通信エラー: " + e);
+          reject();
+        }
+      }, 2000);
+    });
   } catch (e) {
-    alert("通信エラー: " + e);
+    if (e.message) alert("エラー: " + e.message);
+    setProgress(null);
   } finally {
     btn.disabled = false;
   }
+}
+
+function renderResult(geojson) {
+  markerLayer.clearLayers();
+  const bounds = [];
+  geojson.features.forEach(f => {
+    const [lon, lat] = f.geometry.coordinates;
+    const d = f.properties.danger;
+    L.circleMarker([lat, lon], {
+      radius: 6, color: dangerColor(d), fillColor: dangerColor(d),
+      fillOpacity: 0.7, weight: 1
+    }).bindPopup(`危険度: ${d}<br>ΔZ: ${f.properties.delta_z}m`).addTo(markerLayer);
+    bounds.push([lat, lon]);
+  });
+  if (bounds.length) map.fitBounds(bounds);
+  setStatus(`解析完了: ${geojson.features.length} 箇所`);
 }
 </script>
 </body>
