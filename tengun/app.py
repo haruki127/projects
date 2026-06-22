@@ -10,22 +10,23 @@ sessions = {}  # session_id → {"before": [...paths], "after": [...paths], "tmp
 
 
 def get_bounds(paths):
+    # ヘッダーのみ読んで境界を取得（点群を読まないので高速）
     x_min, x_max, y_min, y_max = np.inf, -np.inf, np.inf, -np.inf
     for path in paths:
         with laspy.open(path) as f:
-            las = f.read()
-            x_min = min(x_min, float(las.x.min()))
-            x_max = max(x_max, float(las.x.max()))
-            y_min = min(y_min, float(las.y.min()))
-            y_max = max(y_max, float(las.y.max()))
+            hdr = f.header
+            x_min = min(x_min, float(hdr.x_min))
+            x_max = max(x_max, float(hdr.x_max))
+            y_min = min(y_min, float(hdr.y_min))
+            y_max = max(y_max, float(hdr.y_max))
     return x_min, x_max, y_min, y_max
 
 
 def build_grid(paths, x_edges, y_edges):
     nx = len(x_edges) - 1
     ny = len(y_edges) - 1
-    z_sum = np.zeros((nx, ny))
-    z_cnt = np.zeros((nx, ny), dtype=np.int32)
+    z_sum = np.zeros(nx * ny)
+    z_cnt = np.zeros(nx * ny, dtype=np.int32)
     for path in paths:
         with laspy.open(path) as f:
             las = f.read()
@@ -35,10 +36,12 @@ def build_grid(paths, x_edges, y_edges):
         xi = np.digitize(x, x_edges) - 1
         yi = np.digitize(y, y_edges) - 1
         valid = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
-        np.add.at(z_sum, (xi[valid], yi[valid]), z[valid])
-        np.add.at(z_cnt, (xi[valid], yi[valid]), 1)
-    ix, iy = np.where(z_cnt > 0)
-    return {(int(i), int(j)): float(z_sum[i, j] / z_cnt[i, j]) for i, j in zip(ix, iy)}
+        flat = xi[valid] * ny + yi[valid]
+        zv   = z[valid]
+        z_sum += np.bincount(flat, weights=zv, minlength=nx * ny)
+        z_cnt += np.bincount(flat,              minlength=nx * ny).astype(np.int32)
+    nonzero = np.where(z_cnt > 0)[0]
+    return {(int(i // ny), int(i % ny)): float(z_sum[i] / z_cnt[i]) for i in nonzero}
 
 
 def analyze(before_paths, after_paths):

@@ -67,6 +67,11 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 let markerLayer = L.layerGroup().addTo(map);
+let pollingTimer = null;
+
+function stopPolling() {
+  if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; }
+}
 
 function dangerColor(d) {
   if (d <= 3) return "#006400";
@@ -136,6 +141,7 @@ async function runAnalyze() {
     return;
   }
 
+  stopPolling();
   const btn = document.getElementById("analyze-btn");
   btn.disabled = true;
 
@@ -172,21 +178,21 @@ async function runAnalyze() {
 
     // Step 3: 2秒ごとに完了を確認（ポーリング）
     await new Promise((resolve, reject) => {
-      const timer = setInterval(async () => {
+      pollingTimer = setInterval(async () => {
         try {
           const job = await fetch(`/status/${job_id}`).then(r => r.json());
           if (job.status === "done") {
-            clearInterval(timer);
+            stopPolling();
             setAnalyzeProgress("done");
             renderResult(job.result);
             resolve();
           } else if (job.status === "error") {
-            clearInterval(timer);
+            stopPolling();
             alert("解析エラー: " + job.error);
             reject();
           }
         } catch (e) {
-          clearInterval(timer);
+          stopPolling();
           alert("通信エラー: " + e);
           reject();
         }
