@@ -226,14 +226,26 @@ async function runAnalyze() {
   } catch (e) {
     if (e.message) alert("エラー: " + e.message);
     showProgressWrap(false);
+    setStatus("");
   } finally {
     btn.disabled = false;
-    setStatus("");
   }
 }
 
 function renderResult(geojson) {
   markerLayer.clearLayers();
+
+  if (geojson.features.length === 0) {
+    setStatus("解析完了: 0箇所 — 災害前・後のデータに重複エリアがありません");
+    return;
+  }
+
+  const [lon0, lat0] = geojson.features[0].geometry.coordinates;
+  if (Math.abs(lat0) > 90 || Math.abs(lon0) > 180) {
+    setStatus(`⚠ 座標系エラー: 値 (x=${lon0.toFixed(1)}, y=${lat0.toFixed(1)}) はWGS84経緯度ではありません。LASファイルの座標系を確認してください。`);
+    return;
+  }
+
   const bounds = [];
   geojson.features.forEach(f => {
     const [lon, lat] = f.geometry.coordinates;
@@ -245,7 +257,7 @@ function renderResult(geojson) {
     bounds.push([lat, lon]);
   });
   if (bounds.length) map.fitBounds(bounds);
-  setStatus(`解析完了: ${geojson.features.length} 箇所`);
+  setStatus(`解析完了: ${geojson.features.length.toLocaleString()} 箇所`);
 }
 </script>
 </body>
