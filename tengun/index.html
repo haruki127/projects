@@ -14,10 +14,18 @@
     #analyze-btn { padding: 8px 20px; background: #2980b9; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
     #analyze-btn:disabled { background: #aaa; cursor: not-allowed; }
     #status { font-size: 13px; color: #555; }
-    #progress-wrap { padding: 0 20px 8px; background: #f4f4f4; display: none; }
-    #progress-bg { background: #ddd; border-radius: 4px; height: 8px; }
-    #progress-bar { width: 0%; height: 8px; background: #2980b9; border-radius: 4px; transition: width 0.2s; }
-    #progress-label { font-size: 12px; color: #555; margin-top: 3px; }
+    #progress-wrap { padding: 4px 20px 8px; background: #f4f4f4; display: none; gap: 6px; flex-direction: column; }
+    .prog-row { display: flex; align-items: center; gap: 8px; }
+    .prog-title { font-size: 12px; color: #555; width: 80px; flex-shrink: 0; }
+    .prog-bg { flex: 1; background: #ddd; border-radius: 4px; height: 8px; overflow: hidden; position: relative; }
+    .prog-bar { height: 8px; background: #2980b9; border-radius: 4px; transition: width 0.2s; width: 0%; }
+    .prog-bar.indeterminate { width: 30%; position: absolute; animation: slide 1.4s infinite ease-in-out; }
+    .prog-bar.done { background: #27ae60; width: 100%; }
+    .prog-label { font-size: 12px; color: #555; width: 130px; flex-shrink: 0; text-align: right; }
+    @keyframes slide {
+      0%   { left: -35%; }
+      100% { left: 110%; }
+    }
     #map { flex: 1; }
     #legend { position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: rgba(255,255,255,0.9);
               padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.8; }
@@ -31,9 +39,17 @@
   <button id="analyze-btn" onclick="runAnalyze()">解析実行</button>
   <span id="status"></span>
 </div>
-<div id="progress-wrap">
-  <div id="progress-bg"><div id="progress-bar"></div></div>
-  <div id="progress-label"></div>
+<div id="progress-wrap" style="display:none; flex-direction:column; padding:4px 20px 8px; background:#f4f4f4; gap:6px;">
+  <div class="prog-row">
+    <span class="prog-title">アップロード</span>
+    <div class="prog-bg"><div id="bar-upload" class="prog-bar"></div></div>
+    <span id="label-upload" class="prog-label"></span>
+  </div>
+  <div class="prog-row">
+    <span class="prog-title">解析</span>
+    <div class="prog-bg"><div id="bar-analyze" class="prog-bar"></div></div>
+    <span id="label-analyze" class="prog-label"></span>
+  </div>
 </div>
 <div id="map"></div>
 <div id="legend">
@@ -62,17 +78,32 @@ function setStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
-function setProgress(pct, label) {
+function showProgressWrap(visible) {
   const wrap = document.getElementById("progress-wrap");
-  const bar  = document.getElementById("progress-bar");
-  const lbl  = document.getElementById("progress-label");
-  if (pct === null) {
-    wrap.style.display = "none";
+  wrap.style.display = visible ? "flex" : "none";
+}
+
+function setUploadProgress(pct, label) {
+  const bar = document.getElementById("bar-upload");
+  bar.classList.remove("indeterminate", "done");
+  bar.style.width = pct + "%";
+  document.getElementById("label-upload").textContent = label || `${pct}%`;
+}
+
+function setAnalyzeProgress(state) {
+  const bar = document.getElementById("bar-analyze");
+  const lbl = document.getElementById("label-analyze");
+  bar.classList.remove("indeterminate", "done");
+  if (state === "waiting") {
     bar.style.width = "0%";
-  } else {
-    wrap.style.display = "block";
-    bar.style.width = pct + "%";
-    lbl.textContent = label || `${pct}%`;
+    lbl.textContent = "";
+  } else if (state === "running") {
+    bar.classList.add("indeterminate");
+    lbl.textContent = "処理中...";
+  } else if (state === "done") {
+    bar.style.width = "100%";
+    bar.classList.add("done");
+    lbl.textContent = "完了";
   }
 }
 
@@ -115,19 +146,20 @@ async function runAnalyze() {
   ];
   const total = allFiles.length;
 
+  showProgressWrap(true);
+  setUploadProgress(0, `0 / ${total} ファイル`);
+  setAnalyzeProgress("waiting");
+
   try {
     // Step 1: 1ファイルずつアップロード
     for (let i = 0; i < total; i++) {
       const { type, file } = allFiles[i];
-      setStatus("アップロード中...");
-      setProgress(Math.round(i / total * 100), `アップロード: ${i + 1} / ${total} ファイル`);
       await uploadOne(sessionId, type, file);
+      setUploadProgress(Math.round((i + 1) / total * 100), `${i + 1} / ${total} ファイル`);
     }
-    setProgress(100, `アップロード完了 (${total} ファイル)`);
 
     // Step 2: 解析開始
-    setStatus("解析中...");
-    setProgress(null);
+    setAnalyzeProgress("running");
 
     const res = await fetch("/analyze", {
       method: "POST",
@@ -145,6 +177,7 @@ async function runAnalyze() {
           const job = await fetch(`/status/${job_id}`).then(r => r.json());
           if (job.status === "done") {
             clearInterval(timer);
+            setAnalyzeProgress("done");
             renderResult(job.result);
             resolve();
           } else if (job.status === "error") {
@@ -162,7 +195,7 @@ async function runAnalyze() {
 
   } catch (e) {
     if (e.message) alert("エラー: " + e.message);
-    setProgress(null);
+    showProgressWrap(false);
   } finally {
     btn.disabled = false;
     setStatus("");
