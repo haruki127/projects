@@ -9,50 +9,52 @@ jobs     = {}  # job_id     → {"status": "processing"/"done"/"error", ...}
 sessions = {}  # session_id → {"before": [...paths], "after": [...paths], "tmp": "..."}
 
 
-def load_xyz(paths):
-    xs, ys, zs = [], [], []
+def get_bounds(paths):
+    x_min, x_max, y_min, y_max = np.inf, -np.inf, np.inf, -np.inf
     for path in paths:
         with laspy.open(path) as f:
             las = f.read()
-            xs.append(np.array(las.x))
-            ys.append(np.array(las.y))
-            zs.append(np.array(las.z))
-    return np.concatenate(xs), np.concatenate(ys), np.concatenate(zs)
+            x_min = min(x_min, float(las.x.min()))
+            x_max = max(x_max, float(las.x.max()))
+            y_min = min(y_min, float(las.y.min()))
+            y_max = max(y_max, float(las.y.max()))
+    return x_min, x_max, y_min, y_max
 
 
-def compute_grid_mean_z(x, y, z, x_edges, y_edges):
+def build_grid(paths, x_edges, y_edges):
     nx = len(x_edges) - 1
     ny = len(y_edges) - 1
-    xi = np.digitize(x, x_edges) - 1
-    yi = np.digitize(y, y_edges) - 1
-    valid = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
-    xi, yi, zv = xi[valid], yi[valid], z[valid]
-
-    flat = xi * ny + yi
-    order = np.argsort(flat)
-    flat_s, z_s = flat[order], zv[order]
-
-    unique, starts, counts = np.unique(flat_s, return_index=True, return_counts=True)
-    grid = {}
-    for u, s, c in zip(unique, starts, counts):
-        grid[(int(u // ny), int(u % ny))] = float(z_s[s:s + c].mean())
-    return grid
+    z_sum = np.zeros((nx, ny))
+    z_cnt = np.zeros((nx, ny), dtype=np.int32)
+    for path in paths:
+        with laspy.open(path) as f:
+            las = f.read()
+            x = np.array(las.x)
+            y = np.array(las.y)
+            z = np.array(las.z)
+        xi = np.digitize(x, x_edges) - 1
+        yi = np.digitize(y, y_edges) - 1
+        valid = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
+        np.add.at(z_sum, (xi[valid], yi[valid]), z[valid])
+        np.add.at(z_cnt, (xi[valid], yi[valid]), 1)
+    ix, iy = np.where(z_cnt > 0)
+    return {(int(i), int(j)): float(z_sum[i, j] / z_cnt[i, j]) for i, j in zip(ix, iy)}
 
 
 def analyze(before_paths, after_paths):
-    bx, by, bz = load_xyz(before_paths)
-    ax, ay, az = load_xyz(after_paths)
+    bx_min, bx_max, by_min, by_max = get_bounds(before_paths)
+    ax_min, ax_max, ay_min, ay_max = get_bounds(after_paths)
 
-    x_min = max(bx.min(), ax.min())
-    x_max = min(bx.max(), ax.max())
-    y_min = max(by.min(), ay.min())
-    y_max = min(by.max(), ay.max())
+    x_min = max(bx_min, ax_min)
+    x_max = min(bx_max, ax_max)
+    y_min = max(by_min, ay_min)
+    y_max = min(by_max, ay_max)
 
     x_edges = np.arange(x_min, x_max + GRID_SIZE, GRID_SIZE)
     y_edges = np.arange(y_min, y_max + GRID_SIZE, GRID_SIZE)
 
-    before_grid = compute_grid_mean_z(bx, by, bz, x_edges, y_edges)
-    after_grid  = compute_grid_mean_z(ax, ay, az, x_edges, y_edges)
+    before_grid = build_grid(before_paths, x_edges, y_edges)
+    after_grid  = build_grid(after_paths,  x_edges, y_edges)
 
     common_keys = set(before_grid) & set(after_grid)
     if not common_keys:
