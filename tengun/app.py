@@ -9,10 +9,11 @@ jobs     = {}  # job_id     → {"status": "processing"/"done"/"error", ...}
 sessions = {}  # session_id → {"before": [...paths], "after": [...paths], "tmp": "..."}
 
 
-def get_bounds(paths):
-    # ヘッダーのみ読んで境界を取得（点群を読まないので高速）
+def get_bounds(paths, job_id, label):
+    total = len(paths)
     x_min, x_max, y_min, y_max = np.inf, -np.inf, np.inf, -np.inf
-    for path in paths:
+    for i, path in enumerate(paths):
+        jobs[job_id]["detail"] = f"[境界取得] {label}: {i+1} / {total} ファイル"
         with laspy.open(path) as f:
             hdr = f.header
             x_min = min(x_min, float(hdr.x_min))
@@ -22,12 +23,15 @@ def get_bounds(paths):
     return x_min, x_max, y_min, y_max
 
 
-def build_grid(paths, x_edges, y_edges):
+def build_grid(paths, x_edges, y_edges, job_id, label, offset, total_files):
     nx = len(x_edges) - 1
     ny = len(y_edges) - 1
     z_sum = np.zeros(nx * ny)
     z_cnt = np.zeros(nx * ny, dtype=np.int32)
-    for path in paths:
+    n = len(paths)
+    for i, path in enumerate(paths):
+        jobs[job_id]["detail"] = f"[グリッド構築] {label}: {i+1} / {n} ファイル"
+        jobs[job_id]["pct"]    = int((offset + i + 1) / total_files * 100)
         with laspy.open(path) as f:
             las = f.read()
             x = np.array(las.x)
@@ -44,9 +48,13 @@ def build_grid(paths, x_edges, y_edges):
     return {(int(i // ny), int(i % ny)): float(z_sum[i] / z_cnt[i]) for i in nonzero}
 
 
-def analyze(before_paths, after_paths):
-    bx_min, bx_max, by_min, by_max = get_bounds(before_paths)
-    ax_min, ax_max, ay_min, ay_max = get_bounds(after_paths)
+def analyze(before_paths, after_paths, job_id):
+    nb, na = len(before_paths), len(after_paths)
+    total_files = nb + na
+
+    jobs[job_id]["detail"] = "[境界取得] 開始..."
+    bx_min, bx_max, by_min, by_max = get_bounds(before_paths, job_id, "災害前")
+    ax_min, ax_max, ay_min, ay_max = get_bounds(after_paths,  job_id, "災害後")
 
     x_min = max(bx_min, ax_min)
     x_max = min(bx_max, ax_max)
@@ -56,8 +64,11 @@ def analyze(before_paths, after_paths):
     x_edges = np.arange(x_min, x_max + GRID_SIZE, GRID_SIZE)
     y_edges = np.arange(y_min, y_max + GRID_SIZE, GRID_SIZE)
 
-    before_grid = build_grid(before_paths, x_edges, y_edges)
-    after_grid  = build_grid(after_paths,  x_edges, y_edges)
+    before_grid = build_grid(before_paths, x_edges, y_edges, job_id, "災害前", 0,  total_files)
+    after_grid  = build_grid(after_paths,  x_edges, y_edges, job_id, "災害後", nb, total_files)
+
+    jobs[job_id]["detail"] = "[差分計算] 危険度マップ生成中..."
+    jobs[job_id]["pct"]    = 99
 
     common_keys = set(before_grid) & set(after_grid)
     if not common_keys:
@@ -87,7 +98,7 @@ def analyze(before_paths, after_paths):
 
 def run_job(job_id, before_paths, after_paths, tmp_dir):
     try:
-        result = analyze(before_paths, after_paths)
+        result = analyze(before_paths, after_paths, job_id)
         jobs[job_id] = {"status": "done", "result": result}
     except Exception as e:
         jobs[job_id] = {"status": "error", "error": str(e)}
@@ -141,7 +152,7 @@ def analyze_route():
         return jsonify({"error": "ファイルが不足しています"}), 400
 
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {"status": "processing"}
+    jobs[job_id] = {"status": "processing", "pct": 0, "detail": "準備中..."}
     threading.Thread(target=run_job, args=(job_id, before_paths, after_paths, tmp_dir), daemon=True).start()
 
     return jsonify({"job_id": job_id})

@@ -26,6 +26,8 @@
       0%   { left: -35%; }
       100% { left: 110%; }
     }
+    #detail-log { padding: 4px 20px 6px; background: #f4f4f4; display: none;
+                  font-size: 12px; color: #444; font-family: monospace; }
     #map { flex: 1; }
     #legend { position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: rgba(255,255,255,0.9);
               padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.8; }
@@ -51,6 +53,7 @@
     <span id="label-analyze" class="prog-label"></span>
   </div>
 </div>
+<div id="detail-log"></div>
 <div id="map"></div>
 <div id="legend">
   <b>危険度</b><br>
@@ -84,8 +87,8 @@ function setStatus(msg) {
 }
 
 function showProgressWrap(visible) {
-  const wrap = document.getElementById("progress-wrap");
-  wrap.style.display = visible ? "flex" : "none";
+  document.getElementById("progress-wrap").style.display = visible ? "flex" : "none";
+  if (!visible) setDetailLog("");
 }
 
 function setUploadProgress(pct, label) {
@@ -95,7 +98,7 @@ function setUploadProgress(pct, label) {
   document.getElementById("label-upload").textContent = label || `${pct}%`;
 }
 
-function setAnalyzeProgress(state) {
+function setAnalyzeProgress(state, pct) {
   const bar = document.getElementById("bar-analyze");
   const lbl = document.getElementById("label-analyze");
   bar.classList.remove("indeterminate", "done");
@@ -103,12 +106,28 @@ function setAnalyzeProgress(state) {
     bar.style.width = "0%";
     lbl.textContent = "";
   } else if (state === "running") {
-    bar.classList.add("indeterminate");
-    lbl.textContent = "処理中...";
+    if (pct > 0) {
+      bar.style.width = pct + "%";
+      lbl.textContent = pct + "%";
+    } else {
+      bar.classList.add("indeterminate");
+      lbl.textContent = "処理中...";
+    }
   } else if (state === "done") {
     bar.style.width = "100%";
     bar.classList.add("done");
     lbl.textContent = "完了";
+  }
+}
+
+function setDetailLog(text) {
+  const el = document.getElementById("detail-log");
+  if (text) {
+    el.style.display = "block";
+    el.textContent = "▶ " + text;
+  } else {
+    el.style.display = "none";
+    el.textContent = "";
   }
 }
 
@@ -184,12 +203,17 @@ async function runAnalyze() {
           if (job.status === "done") {
             stopPolling();
             setAnalyzeProgress("done");
+            setDetailLog("");
             renderResult(job.result);
             resolve();
           } else if (job.status === "error") {
             stopPolling();
+            setDetailLog("");
             alert("解析エラー: " + job.error);
             reject();
+          } else if (job.status === "processing") {
+            setAnalyzeProgress("running", job.pct || 0);
+            setDetailLog(job.detail || "");
           }
         } catch (e) {
           stopPolling();
