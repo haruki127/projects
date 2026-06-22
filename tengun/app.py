@@ -6,14 +6,14 @@ import os, tempfile, threading, uuid, shutil
 app = Flask(__name__)
 GRID_SIZE = 1.0
 jobs     = {}  # job_id     → {"status": "processing"/"done"/"error", ...}
-sessions = {}  # session_id → {"before": [...paths], "after": [...paths], "tmp": "..."}
+sessions = {}  # session_id → {"before": [...paths], "after": [...paths], ...}
 
 
-def get_bounds(paths, job_id, label):
+def get_bounds(paths, names, job_id, label):
     total = len(paths)
     x_min, x_max, y_min, y_max = np.inf, -np.inf, np.inf, -np.inf
-    for i, path in enumerate(paths):
-        jobs[job_id]["detail"] = f"[境界取得] {label}: {i+1} / {total} ファイル"
+    for i, (path, name) in enumerate(zip(paths, names)):
+        jobs[job_id]["detail"] = f"[境界取得] {label} ({i+1}/{total}): {name} を読み込み中"
         with laspy.open(path) as f:
             hdr = f.header
             x_min = min(x_min, float(hdr.x_min))
@@ -23,14 +23,14 @@ def get_bounds(paths, job_id, label):
     return x_min, x_max, y_min, y_max
 
 
-def build_grid(paths, x_edges, y_edges, job_id, label, offset, total_files):
+def build_grid(paths, names, x_edges, y_edges, job_id, label, offset, total_files):
     nx = len(x_edges) - 1
     ny = len(y_edges) - 1
     z_sum = np.zeros(nx * ny)
     z_cnt = np.zeros(nx * ny, dtype=np.int32)
     n = len(paths)
-    for i, path in enumerate(paths):
-        jobs[job_id]["detail"] = f"[グリッド構築] {label}: {i+1} / {n} ファイル"
+    for i, (path, name) in enumerate(zip(paths, names)):
+        jobs[job_id]["detail"] = f"[グリッド構築] {label} ({i+1}/{n}): {name} を処理中"
         jobs[job_id]["pct"]    = int((offset + i + 1) / total_files * 100)
         with laspy.open(path) as f:
             las = f.read()
@@ -48,13 +48,13 @@ def build_grid(paths, x_edges, y_edges, job_id, label, offset, total_files):
     return {(int(i // ny), int(i % ny)): float(z_sum[i] / z_cnt[i]) for i in nonzero}
 
 
-def analyze(before_paths, after_paths, job_id):
+def analyze(before_paths, before_names, after_paths, after_names, job_id):
     nb, na = len(before_paths), len(after_paths)
     total_files = nb + na
 
     jobs[job_id]["detail"] = "[境界取得] 開始..."
-    bx_min, bx_max, by_min, by_max = get_bounds(before_paths, job_id, "災害前")
-    ax_min, ax_max, ay_min, ay_max = get_bounds(after_paths,  job_id, "災害後")
+    bx_min, bx_max, by_min, by_max = get_bounds(before_paths, before_names, job_id, "災害前")
+    ax_min, ax_max, ay_min, ay_max = get_bounds(after_paths,  after_names,  job_id, "災害後")
 
     x_min = max(bx_min, ax_min)
     x_max = min(bx_max, ax_max)
@@ -64,8 +64,8 @@ def analyze(before_paths, after_paths, job_id):
     x_edges = np.arange(x_min, x_max + GRID_SIZE, GRID_SIZE)
     y_edges = np.arange(y_min, y_max + GRID_SIZE, GRID_SIZE)
 
-    before_grid = build_grid(before_paths, x_edges, y_edges, job_id, "災害前", 0,  total_files)
-    after_grid  = build_grid(after_paths,  x_edges, y_edges, job_id, "災害後", nb, total_files)
+    before_grid = build_grid(before_paths, before_names, x_edges, y_edges, job_id, "災害前", 0,  total_files)
+    after_grid  = build_grid(after_paths,  after_names,  x_edges, y_edges, job_id, "災害後", nb, total_files)
 
     jobs[job_id]["detail"] = "[差分計算] 危険度マップ生成中..."
     jobs[job_id]["pct"]    = 99
@@ -96,9 +96,9 @@ def analyze(before_paths, after_paths, job_id):
     return {"type": "FeatureCollection", "features": features}
 
 
-def run_job(job_id, before_paths, after_paths, tmp_dir):
+def run_job(job_id, before_paths, before_names, after_paths, after_names, tmp_dir):
     try:
-        result = analyze(before_paths, after_paths, job_id)
+        result = analyze(before_paths, before_names, after_paths, after_names, job_id)
         jobs[job_id] = {"status": "done", "result": result}
     except Exception as e:
         jobs[job_id] = {"status": "error", "error": str(e)}
@@ -122,14 +122,17 @@ def upload_file():
 
     if session_id not in sessions:
         sessions[session_id] = {
-            "before": [], "after": [],
+            "before": [], "before_names": [],
+            "after":  [], "after_names":  [],
             "tmp": tempfile.mkdtemp(dir="D:\\")
         }
 
-    bucket = sessions[session_id][file_type]
+    bucket       = sessions[session_id][file_type]
+    names_bucket = sessions[session_id][file_type + "_names"]
     path = os.path.join(sessions[session_id]["tmp"], f"{file_type}_{len(bucket)}.las")
     file.save(path)
     bucket.append(path)
+    names_bucket.append(file.filename)
 
     return jsonify({"ok": True})
 
@@ -144,7 +147,9 @@ def analyze_route():
 
     session      = sessions.pop(session_id)
     before_paths = session["before"]
+    before_names = session["before_names"]
     after_paths  = session["after"]
+    after_names  = session["after_names"]
     tmp_dir      = session["tmp"]
 
     if not before_paths or not after_paths:
@@ -153,7 +158,11 @@ def analyze_route():
 
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"status": "processing", "pct": 0, "detail": "準備中..."}
-    threading.Thread(target=run_job, args=(job_id, before_paths, after_paths, tmp_dir), daemon=True).start()
+    threading.Thread(
+        target=run_job,
+        args=(job_id, before_paths, before_names, after_paths, after_names, tmp_dir),
+        daemon=True
+    ).start()
 
     return jsonify({"job_id": job_id})
 
