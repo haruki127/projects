@@ -5,12 +5,13 @@ import os, tempfile, threading, uuid, shutil
 
 app = Flask(__name__)
 GRID_SIZE = 1.0
-jobs = {}  # job_id → {"status": "processing"/"done"/"error", ...}
+jobs     = {}  # job_id     → {"status": "processing"/"done"/"error", ...}
+sessions = {}  # session_id → {"before": [...paths], "after": [...paths], "tmp": "..."}
 
 
 def load_xyz(paths):
     xs, ys, zs = [], [], []
-    for path in (paths if isinstance(paths, list) else [paths]):
+    for path in paths:
         with laspy.open(path) as f:
             las = f.read()
             xs.append(np.array(las.x))
@@ -20,14 +21,22 @@ def load_xyz(paths):
 
 
 def compute_grid_mean_z(x, y, z, x_edges, y_edges):
-    grid = {}
+    nx = len(x_edges) - 1
+    ny = len(y_edges) - 1
     xi = np.digitize(x, x_edges) - 1
     yi = np.digitize(y, y_edges) - 1
-    valid = (xi >= 0) & (xi < len(x_edges) - 1) & (yi >= 0) & (yi < len(y_edges) - 1)
-    for i in np.where(valid)[0]:
-        key = (xi[i], yi[i])
-        grid.setdefault(key, []).append(z[i])
-    return {k: np.mean(v) for k, v in grid.items()}
+    valid = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
+    xi, yi, zv = xi[valid], yi[valid], z[valid]
+
+    flat = xi * ny + yi
+    order = np.argsort(flat)
+    flat_s, z_s = flat[order], zv[order]
+
+    unique, starts, counts = np.unique(flat_s, return_index=True, return_counts=True)
+    grid = {}
+    for u, s, c in zip(unique, starts, counts):
+        grid[(int(u // ny), int(u % ny))] = float(z_s[s:s + c].mean())
+    return grid
 
 
 def analyze(before_paths, after_paths):
@@ -86,27 +95,49 @@ def index():
     return send_from_directory(".", "index.html")
 
 
+@app.route("/upload", methods=["POST"])
+def upload_file():
+    session_id = request.form.get("session_id")
+    file_type  = request.form.get("type")
+    file       = request.files.get("file")
+
+    if not session_id or file_type not in ("before", "after") or not file:
+        return jsonify({"error": "invalid request"}), 400
+
+    if session_id not in sessions:
+        sessions[session_id] = {
+            "before": [], "after": [],
+            "tmp": tempfile.mkdtemp(dir="D:\\")
+        }
+
+    bucket = sessions[session_id][file_type]
+    path = os.path.join(sessions[session_id]["tmp"], f"{file_type}_{len(bucket)}.las")
+    file.save(path)
+    bucket.append(path)
+
+    return jsonify({"ok": True})
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze_route():
-    if "before" not in request.files or "after" not in request.files:
-        return jsonify({"error": "before と after の両ファイルが必要です"}), 400
+    data = request.get_json()
+    session_id = data.get("session_id") if data else None
+
+    if not session_id or session_id not in sessions:
+        return jsonify({"error": "セッションが見つかりません"}), 400
+
+    session      = sessions.pop(session_id)
+    before_paths = session["before"]
+    after_paths  = session["after"]
+    tmp_dir      = session["tmp"]
+
+    if not before_paths or not after_paths:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return jsonify({"error": "ファイルが不足しています"}), 400
 
     job_id = str(uuid.uuid4())
-    tmp = tempfile.mkdtemp(dir="D:\\")
-
-    def save_all(key):
-        paths = []
-        for i, f in enumerate(request.files.getlist(key)):
-            p = os.path.join(tmp, f"{key}_{i}.las")
-            f.save(p)
-            paths.append(p)
-        return paths
-
-    before_paths = save_all("before")
-    after_paths  = save_all("after")
-
     jobs[job_id] = {"status": "processing"}
-    threading.Thread(target=run_job, args=(job_id, before_paths, after_paths, tmp), daemon=True).start()
+    threading.Thread(target=run_job, args=(job_id, before_paths, after_paths, tmp_dir), daemon=True).start()
 
     return jsonify({"job_id": job_id})
 

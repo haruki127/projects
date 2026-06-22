@@ -16,7 +16,7 @@
     #status { font-size: 13px; color: #555; }
     #progress-wrap { padding: 0 20px 8px; background: #f4f4f4; display: none; }
     #progress-bg { background: #ddd; border-radius: 4px; height: 8px; }
-    #progress-bar { width: 0%; height: 8px; background: #2980b9; border-radius: 4px; transition: width 0.3s; }
+    #progress-bar { width: 0%; height: 8px; background: #2980b9; border-radius: 4px; transition: width 0.2s; }
     #progress-label { font-size: 12px; color: #555; margin-top: 3px; }
     #map { flex: 1; }
     #legend { position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: rgba(255,255,255,0.9);
@@ -62,54 +62,83 @@ function setStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
-function setProgress(pct) {
-  const wrap  = document.getElementById("progress-wrap");
-  const bar   = document.getElementById("progress-bar");
-  const label = document.getElementById("progress-label");
+function setProgress(pct, label) {
+  const wrap = document.getElementById("progress-wrap");
+  const bar  = document.getElementById("progress-bar");
+  const lbl  = document.getElementById("progress-label");
   if (pct === null) {
     wrap.style.display = "none";
     bar.style.width = "0%";
   } else {
     wrap.style.display = "block";
     bar.style.width = pct + "%";
-    label.textContent = `アップロード: ${pct}%`;
+    lbl.textContent = label || `${pct}%`;
   }
+}
+
+function uploadOne(sessionId, fileType, file) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append("session_id", sessionId);
+    form.append("type", fileType);
+    form.append("file", file);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/upload");
+    xhr.onload = () => {
+      try {
+        const res = JSON.parse(xhr.responseText);
+        res.error ? reject(new Error(res.error)) : resolve();
+      } catch (e) {
+        reject(new Error("レスポンス解析エラー"));
+      }
+    };
+    xhr.onerror = () => reject(new Error("通信エラー"));
+    xhr.send(form);
+  });
 }
 
 async function runAnalyze() {
   const beforeFiles = document.getElementById("before-file").files;
   const afterFiles  = document.getElementById("after-file").files;
-  if (!beforeFiles.length || !afterFiles.length) { alert("災害前・後の両ファイルを選択してください"); return; }
+  if (!beforeFiles.length || !afterFiles.length) {
+    alert("災害前・後の両ファイルを選択してください");
+    return;
+  }
 
   const btn = document.getElementById("analyze-btn");
   btn.disabled = true;
-  setStatus("アップロード中...");
-  setProgress(0);
 
-  const form = new FormData();
-  for (const f of beforeFiles) form.append("before", f);
-  for (const f of afterFiles)  form.append("after", f);
+  const sessionId = crypto.randomUUID();
+  const allFiles = [
+    ...[...beforeFiles].map(f => ({ type: "before", file: f })),
+    ...[...afterFiles].map(f  => ({ type: "after",  file: f })),
+  ];
+  const total = allFiles.length;
 
   try {
-    // Step 1: XHR でアップロード進捗を取得しながら job_id を受け取る
-    const job_id = await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/analyze");
-      xhr.upload.onprogress = e => {
-        if (e.lengthComputable) setProgress(Math.round(e.loaded / e.total * 100));
-      };
-      xhr.onload = () => {
-        const { job_id, error } = JSON.parse(xhr.responseText);
-        error ? reject(new Error(error)) : resolve(job_id);
-      };
-      xhr.onerror = () => reject(new Error("アップロード失敗"));
-      xhr.send(form);
-    });
+    // Step 1: 1ファイルずつアップロード
+    for (let i = 0; i < total; i++) {
+      const { type, file } = allFiles[i];
+      setStatus("アップロード中...");
+      setProgress(Math.round(i / total * 100), `アップロード: ${i + 1} / ${total} ファイル`);
+      await uploadOne(sessionId, type, file);
+    }
+    setProgress(100, `アップロード完了 (${total} ファイル)`);
 
-    setProgress(null);
+    // Step 2: 解析開始
     setStatus("解析中...");
+    setProgress(null);
 
-    // Step 2: 2秒ごとに完了を確認（ポーリング）
+    const res = await fetch("/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId })
+    }).then(r => r.json());
+
+    if (res.error) throw new Error(res.error);
+    const job_id = res.job_id;
+
+    // Step 3: 2秒ごとに完了を確認（ポーリング）
     await new Promise((resolve, reject) => {
       const timer = setInterval(async () => {
         try {
@@ -130,11 +159,13 @@ async function runAnalyze() {
         }
       }, 2000);
     });
+
   } catch (e) {
     if (e.message) alert("エラー: " + e.message);
     setProgress(null);
   } finally {
     btn.disabled = false;
+    setStatus("");
   }
 }
 
